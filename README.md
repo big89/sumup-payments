@@ -4,6 +4,8 @@ This guide shows how an application creates a SumUp checkout and takes a card pa
 
 All API requests go to the base URL `https://api.sumup.com`.
 
+> **WHMCS users:** a ready-made payment gateway module that implements this flow is in [`whmcs/`](whmcs/README.md).
+
 Checkouts are **created on your server** in server-to-server calls. This lets you
 
 *   keep your API key or OAuth client credentials secret.

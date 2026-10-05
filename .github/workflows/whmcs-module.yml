@@ -1,0 +1,22 @@
+name: WHMCS module tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        php: ['7.4', '8.1', '8.3']
+    steps:
+      - uses: actions/checkout@v4
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: ${{ matrix.php }}
+          extensions: curl, json, pdo_sqlite
+      - name: Lint
+        run: find whmcs tests -name '*.php' -print0 | xargs -0 -n1 php -l
+      - name: End-to-end tests
+        run: php tests/run.php
