@@ -1,192 +1,269 @@
-# Checkout flow
+# SumUp online checkout flow
 
-The checkout flow described below enables applications to create a checkout and process card payments in a browser or a native application such as a mobile application.
+This guide shows how an application creates a SumUp checkout and takes a card payment for it, either in a browser or in a native app such as a mobile application.
 
-Checkouts are created in a server to server communication. This allows to
+All API requests go to the base URL `https://api.sumup.com`.
 
-*   keep your access token and client credentials secret.
-*   prevent changes of your web based checkout properties. For example, amount or recipient.
+Checkouts are **created on your server** in server-to-server calls. This lets you
 
-Checkouts are processed by the client (in a browser in the case of web application). This guarantees that
+*   keep your API key or OAuth client credentials secret.
+*   stop anyone from changing the checkout's properties (for example the amount or the receiving merchant) from the client.
 
-*   no sensitive (card data) ever hits your server.
-*   you don't need to worry about PCI compliance.
-*   you are in full control of the UI thus giving the best user experience to your customers.
+Checkouts are **paid on the client** with the SumUp Payment Widget (or SumUp's Hosted Checkout page). This means that
 
-_Processing payments is available only for browsers with CORS support. There are no specific restrictions related to native applications._
+*   card data goes straight from the customer's device to SumUp and never reaches your server.
+*   your PCI DSS scope stays minimal, because SumUp collects and processes the card data.
+*   3-D Secure (Strong Customer Authentication) is handled for you.
 
-##1. Roles
+> **Note:** You can also send raw card data to SumUp yourself (see [5.2](#52-alternative-process-the-checkout-via-the-api)). This makes your systems handle cardholder data, so it needs full PCI DSS compliance, and SumUp has to enable it for your account. Use the Payment Widget or Hosted Checkout unless you have a specific reason not to.
 
-Client
-> The **user interface** that might be rendered in a browser or in a mobile app. It processes checkouts created by your server by passing user-provided card details to SumUp backend.
+## 1. Roles
 
-Server
-> The **backend** that serves the client application. It is responsible for the server-side communication with SumUp with regards to authorization, creating checkouts, and retrieving the status of a checkout.
+**Client**
+> The **user interface**, rendered in a browser or a mobile app. It shows the SumUp Payment Widget, which collects the customer's card details and sends them directly to SumUp.
 
-SumUp
-> **SumUp's server**, which provides authentication, checkout creation and processing, and details about the state of checkouts.
+**Server**
+> The **backend** behind the client. It handles all authenticated communication with SumUp: authenticating, creating checkouts, receiving webhooks and checking checkout status.
 
-##2. Flow
+**SumUp**
+> **SumUp's API**. It handles authorization, creating and processing checkouts, and 3-D Secure, and reports the state of checkouts.
+
+## 2. Flow
 
 ```
-         +-----------------+                          +------------------------+
-         |                 <---------(E1) ------------+                        |
-         |  Client         |                          |  SumUp                 |
-         |  (Web|Mobile)   |                          |  (Auth/Payment Server) |
-         |                 +---------(E)-------------->                        |
-         +---^---------+---+                          +------^-------^--^-^----+
-             |         |                                     |       |  | |
-             |         |                                     |       |  | |
-            (D)       (D1)                                   |       |  | |
-             |         |                                     |       |  | |
-             |         |                                     |       |  | |
-             |         |                                     |       |  | |
-         +---+---------v---+                                 |       |  | |
-         |                 +----------(F)--------------------+       |  | |
-         |  Server         |                                         |  | |
-         |  (Your          |                                         |  | |
-         |  Backend)       |                                         |  | |
-         |                 +----------------------------(C)----------+  | |
-         |                 +--------------(B)---------------------------+ |
-         |                 +-(A)------------------------------------------+
-         +-----------------+
+ +----------------+                                    +------------------------+
+ |                +--------(D) pay via widget, 3DS --->|                        |
+ |  Client        |<-------(D) payment result ---------+  SumUp                 |
+ |  (Web|Mobile)  |                                    |  (Auth/Payment API)    |
+ |                |                                    |                        |
+ +---^--------+---+                                    +--^--+--^-------^-------+
+     |        |                                           |  |  |       |
+    (C)      (G)                                          |  |  |       |
+     |        |                                           |  |  |       |
+ +---+--------v---+                                       |  |  |       |
+ |                +------(A) get access token ------------+  |  |       |
+ |  Server        |                                          |  |       |
+ |  (Your         |<-----(E) webhook (status changed) -------+  |       |
+ |  Backend)      +------(B) create checkout -------------------+       |
+ |                +------(F) get checkout status -----------------------+
+ +----------------+
 ```
 
-##3. Flow steps
+1.  **(A)** The Server authenticates with SumUp.
+2.  **(B)** The Server creates a checkout.
+3.  **(C)** The Server passes the checkout `id` to the Client.
+4.  **(D)** The Client mounts the Payment Widget with that `id`. The customer enters their card details and, if required, completes 3-D Secure.
+5.  **(E)** SumUp notifies the Server that the checkout status changed.
+6.  **(F)** The Server fetches the checkout to confirm its final status.
+7.  **(G)** The Server tells the Client the result (for example by showing an order confirmation page).
 
-###3.1 (A) Get an access token from SumUp
-First, your Server needs to authenticate with SumUp. Send a request to SumUp with your client credentials (obtained on the SumUp Dashboard). SumUp will respond with an `access_token` that must be included in subsequent requests relating to this checkout. For example:
+## 3. Authenticate with SumUp (A)
+
+There are two ways for your Server to authenticate. **Never expose either credential to the Client.**
+
+### 3.1 API key (simplest)
+
+If you only take payments for your own SumUp merchant account, create an API key in the SumUp Dashboard (Developer settings) and send it as a bearer token:
+
+    Authorization: Bearer {api_key}
+
+### 3.2 OAuth 2.0 client credentials
+
+If you use an OAuth application, request an access token with the client credentials grant:
 
 _Request_
 
+    POST https://api.sumup.com/token
+    Content-Type: application/x-www-form-urlencoded
 
-    POST /v0.1/oauth
-    Headers: Content-Type: application/json
-    
-    {
-        "client_id": "...",
-        "client_secret": "..."
-    }
+    grant_type=client_credentials&client_id={client_id}&client_secret={client_secret}&scope=payments
 
 _Response_
 
-    HTTP Status 200
-    
+    HTTP/1.1 200 OK
+
     {
-        "access_token": "....."
-    }    
+        "access_token": "...",
+        "token_type": "Bearer",
+        "expires_in": 3599,
+        "scope": "payments"
+    }
 
-###3.2 (B) Create a checkout
-A new checkout is created in a server-to-server communication between your Server and SumUp. The amount of the checkout cannot be altered after it's been created. The body of the request should include the following parameters:
+Cache the token and request a new one before it expires. Send it in later requests as `Authorization: Bearer {access_token}`.
 
-**amount**
-> (required) The payable amount.
+> The `payments` scope is restricted: SumUp has to enable it for your OAuth application before you can create checkouts with an OAuth token.
 
-**currency**
-> (required) The checkout currency. Should be the same as the payee's account currency (based on the registration country). Supported currencies include EUR, GBP, BRL, PLN, CHF, SEK, USD.
+### 3.3 Find your merchant code
 
-**pay\_to\_email**
-> (required) The email of the payee. Should correspond to a registered SumUp account that is allowed to receive payments.
+A checkout is addressed to a **merchant code**, not an email address. You can read it from the SumUp Dashboard or from the API:
 
-**checkout_reference**
-> (required) The Server should use this parameter to pass its own unique identifier for the checkout, which can be used later for reconciliation purposes.
+    GET https://api.sumup.com/v0.1/me
+    Authorization: Bearer {token}
 
-**description**
-> (optional) A description of the checkout.
+The merchant code is in `merchant_profile.merchant_code`.
 
-Example:
+## 4. Create a checkout (B)
+
+Your Server creates a checkout. Its amount and recipient can't be changed after it's created.
+
+### Request body
+
+| Parameter | Required | Description |
+|---|---|---|
+| `checkout_reference` | yes | Your own unique identifier for the checkout, used for reconciliation. Must be unique per merchant. |
+| `amount` | yes | The amount to charge, as a decimal number (for example `10.50`). |
+| `currency` | yes | ISO 4217 currency code. Must match the merchant account's currency, for example `EUR`, `GBP`, `USD`, `CHF`, `PLN`, `SEK`, `NOK`, `DKK`, `CZK`, `HUF`, `BGN`, `RON`, `BRL`, `CLP`. |
+| `merchant_code` | yes | The code of the merchant that receives the payment (see [3.3](#33-find-your-merchant-code)). Replaces the deprecated `pay_to_email`. |
+| `description` | no | A short description of the checkout. |
+| `return_url` | no | A URL on your Server where SumUp sends webhook notifications when the checkout status changes (see [6](#6-receive-the-result-e-f)). |
+| `redirect_url` | no | The URL the customer returns to after 3-D Secure or an alternative payment method that needs a redirect. Required when processing through the API with 3-D Secure (see [5.2](#52-alternative-process-the-checkout-via-the-api)). |
+| `valid_until` | no | ISO 8601 date-time after which the checkout can no longer be paid. |
+| `customer_id` | no | Your customer's ID. Needed, together with `purpose`, to save a card for later payments. |
+| `purpose` | no | `CHECKOUT` (default) or `SETUP_RECURRING_PAYMENT` to save the customer's card. |
+| `hosted_checkout` | no | `{ "enabled": true }` to get a SumUp-hosted payment page (see [5.3](#53-alternative-hosted-checkout)). |
+
+### Example
 
 _Request_
 
+    POST https://api.sumup.com/v0.1/checkouts
+    Content-Type: application/json
+    Authorization: Bearer {token}
 
-    POST /v0.1/checkout
-    Headers: Content-Type: application/json
-             Authorization: Bearer {access_token}
-    
     {
-        "amount": 10.5,
+        "checkout_reference": "order-1234",
+        "amount": 10.50,
         "currency": "EUR",
-        "pay_to_email": "payee@mail.com",
-        "checkout_reference": "my-unique-identifier"
+        "merchant_code": "MH4H92C7",
+        "description": "Order #1234",
+        "return_url": "https://my.domain.com/webhooks/sumup",
+        "redirect_url": "https://my.domain.com/checkout/complete"
     }
 
 _Response_
 
-    HTTP Status 200
-    
+    HTTP/1.1 201 Created
+
     {
         "id": "80e5e401-a503-4333-a446-6f190c08d617",
-        "checkout_reference": "my-unique-identifier",
-        "amount": 10.5,
+        "checkout_reference": "order-1234",
+        "amount": 10.50,
         "currency": "EUR",
-        "pay_to_email": "payee@mail.com",
+        "merchant_code": "MH4H92C7",
+        "description": "Order #1234",
+        "return_url": "https://my.domain.com/webhooks/sumup",
         "status": "PENDING",
-        "date": "2016-01-01T01:00:00.251Z"
-    }    
-
-Possible response status values can be PAID | PENDING | FAILED.
-
-###3.3 (C) Obtain a payment authorization code (OTP Token)
-In order to complete a checkout in a browser, an authorization code must accompany the request. This code is valid for a single request. An example of a request to obtain this code between your Server and SumUp:
-
-    POST /one-time-tokens
-    Headers: Authorization: Bearer {access_token}
-             X-Sumup-Allow-Origin: my.domain.com
-    
-
-The header X-Sumup-Allow-Origin should be set to the Client domain in order to enable CORS requests needed to complete the checkout.
-
-The server would response to the above request with:
-
-    { "otpToken": "..." }
-
-###3.4 (D) Expose checkout's `id` and the `otpToken` to the browser
-Your Server then needs to expose the authorization code (otpToken) and checkout's id to the Client, so that the Client can trigger a request using these two pieces of data based on an action that happens on the Client (for example, clicking a "Pay Now" button).
-
-
-###3.5 (E) Complete payment
-After creating the checkout, the Client can finalize it by passing the payment details with a simple ajax PUT request, like:
-
-    
-    PUT /v0.1/checkouts/:id?otp={otpToken}
-    
-    {
-      "payment_type":"card",
-        "card": {
-            "cvv": "...",
-            "expiry_month": "01",
-            "expiry_year": "2016",
-            "number": ".......",
-          "name":"...."
-        }
-    }
-    
-
-The path parameter `id` should be the `id` obtained in step 3.2 (B) as part of the checkout response from SumUp, for example:
-
-    /v0.1/checkouts/80e5e401-a503-4333-a446-6f190c08d617?otp={otpToken}
-
-    {
-      "payment_type":"card",
-        "card": {
-            "cvv": "...",
-            "expiry_month": "01",
-            "expiry_year": "2016",
-            "number": ".......",
-          "name":"...."
-        }
+        "date": "2026-10-05T10:00:00.000+00:00",
+        "transactions": []
     }
 
-And the query parameter `otp` should be the authorization code obtained in 3.3 (C).
+A checkout's `status` is one of:
 
-After you make this request, SumUp will respond with a checkout object (see 3.2 for an example).
+| Status | Meaning |
+|---|---|
+| `PENDING` | Created, not yet paid. |
+| `PAID` | Payment succeeded. |
+| `FAILED` | Payment attempt failed. |
+| `EXPIRED` | The checkout passed `valid_until` without being paid. |
 
-###3.6 Additional steps (D1,F)
-After processing a checkout, the client can check its state via GET request. This call will return a checkout object as described in 3.2. 
+Your Server then passes the checkout `id` to the Client **(C)**. Pass only the `id`, never your API key or access token.
 
-Example request:
+## 5. Process the payment (D)
 
-    
-    GET /v0.1/checkouts/:id
-    Headers: Authorization: Bearer {access_token}
-    
+### 5.1 Recommended: SumUp Payment Widget
+
+The Payment Widget is a JavaScript component that SumUp hosts. It renders the card form, sends the card data directly to SumUp, and runs 3-D Secure when the card issuer requires it.
+
+```html
+<div id="sumup-card"></div>
+<script src="https://gateway.sumup.com/gateway/ecom/card/v2/sdk.js"></script>
+<script>
+  SumUpCard.mount({
+    id: 'sumup-card',
+    checkoutId: '80e5e401-a503-4333-a446-6f190c08d617', // from step (B)
+    onResponse: function (type, body) {
+      // type: 'sent' | 'invalid' | 'auth-screen' | 'error' | 'success' | 'fail'
+      if (type === 'success' || type === 'fail' || type === 'error') {
+        // Don't trust this as the final result; ask your Server,
+        // which verifies the checkout with SumUp (see section 6).
+        window.location.href = '/checkout/complete?id=80e5e401-a503-4333-a446-6f190c08d617';
+      }
+    },
+  });
+</script>
+```
+
+Native apps can show the same widget in a WebView, or use SumUp's mobile SDKs.
+
+### 5.2 Alternative: process the checkout via the API
+
+> **Requires full PCI DSS compliance and approval from SumUp.** Only use this if your systems are allowed to handle raw card data.
+
+    PUT https://api.sumup.com/v0.1/checkouts/{id}
+    Content-Type: application/json
+
+    {
+        "payment_type": "card",
+        "card": {
+            "name": "Jane Doe",
+            "number": "4111111111111111",
+            "expiry_month": "12",
+            "expiry_year": "2028",
+            "cvv": "123"
+        }
+    }
+
+`{id}` is the checkout `id` from step (B). The one-time token (`POST /one-time-tokens`, the `X-Sumup-Allow-Origin` header and the `?otp=` query parameter) from earlier versions of this flow is no longer used.
+
+SumUp responds with the checkout object. If the card issuer requires **3-D Secure**, the response has a `next_step` object instead of a final status:
+
+    {
+        "id": "80e5e401-a503-4333-a446-6f190c08d617",
+        "status": "PENDING",
+        "next_step": {
+            "url": "https://...",
+            "method": "POST",
+            "payload": { "...": "..." },
+            "redirect_url": "https://my.domain.com/checkout/complete",
+            "mechanism": ["iframe", "browser"]
+        }
+    }
+
+To continue, send the customer's browser to `next_step.url` with the given `method` and `payload` (for example by auto-submitting a form). When the customer finishes the challenge, they return to `redirect_url`, and your Server confirms the outcome as described in [6](#6-receive-the-result-e-f).
+
+### 5.3 Alternative: Hosted Checkout
+
+Create the checkout with `"hosted_checkout": { "enabled": true }`. The response then has a `hosted_checkout_url`. Redirect the customer there; SumUp shows the payment page, takes the payment, and sends the customer back to `redirect_url`.
+
+## 6. Receive the result (E, F)
+
+### 6.1 Webhook (E)
+
+If you set `return_url` when creating the checkout, SumUp sends a `POST` to it whenever the checkout status changes:
+
+    {
+        "event_type": "CHECKOUT_STATUS_CHANGED",
+        "id": "80e5e401-a503-4333-a446-6f190c08d617"
+    }
+
+Reply quickly with a `2xx` status. **Don't trust the webhook body as proof of payment.** Use it only as a signal to fetch the checkout (F).
+
+### 6.2 Get checkout status (F)
+
+Only your **Server** calls this endpoint, because it needs your secret credentials:
+
+    GET https://api.sumup.com/v0.1/checkouts/{id}
+    Authorization: Bearer {token}
+
+It returns the checkout object (see [4](#4-create-a-checkout-b)). When the checkout is `PAID`, the `transactions` array has the transaction details (`transaction_code`, `status`, `amount` and others). Fulfil the order only after you have confirmed `PAID` here.
+
+Your Server then shows the result to the Client **(G)**.
+
+## 7. Further reading
+
+*   [Accept a payment guide](https://developer.sumup.com/online-payments/guides/single-payment)
+*   [Checkouts API reference](https://developer.sumup.com/api/checkouts)
+*   [Hosted Checkout](https://developer.sumup.com/online-payments/checkouts/hosted-checkout)
+*   [Authorization (API keys and OAuth 2.0)](https://developer.sumup.com/tools/authorization/authorization)
+*   [Changelog](https://developer.sumup.com/changelog)
+*   Official server SDKs (they take care of authentication and request formats): [Python](https://github.com/sumup/sumup-py), [PHP](https://github.com/sumup/sumup-ecom-php-sdk), [.NET](https://github.com/sumup/sumup-dotnet), and others under [github.com/sumup](https://github.com/sumup).
